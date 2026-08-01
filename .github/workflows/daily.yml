@@ -1,0 +1,36 @@
+name: Daily KOSPI/KOSDAQ Automation
+
+on:
+  schedule:
+    # UTC 07:20 = 한국시간(KST) 16:20. 매일 실행하되, 주말/공휴일 여부는
+    # main_pipeline.py 안의 is_trading_day() 가 판단해서 휴장일이면 그냥 종료함.
+    - cron: "20 7 * * 1-5"
+  workflow_dispatch: {}  # Actions 탭에서 수동으로도 실행할 수 있게 해줌 (테스트용)
+
+jobs:
+  run-pipeline:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 저장소 코드 가져오기
+        uses: actions/checkout@v4
+
+      - name: 파이썬 설치
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 필요한 패키지 설치
+        run: |
+          pip install requests beautifulsoup4 lxml anthropic gspread google-auth holidays
+
+      - name: 구글 서비스 계정 키 파일 복원
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+        run: |
+          echo "$GOOGLE_SERVICE_ACCOUNT_JSON" > service_account.json
+
+      - name: 자동화 파이프라인 실행
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          python main_pipeline.py
