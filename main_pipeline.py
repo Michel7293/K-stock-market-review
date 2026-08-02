@@ -4,8 +4,7 @@
 1. 네이버금융에서 상한가 + 15~29.4% 급등(거래대금 상위) 종목 크롤링
 2. 종목별 상세정보(업종/시가총액/상장주식수/외국인비율/거래대금) 크롤링
 3. 종목별 뉴스 크롤링 + Claude API(웹서치 포함)로 키워드/이슈/테마 요약
-4. 구글시트에 새 행으로 추가
-5. 주말/한국 공휴일에는 자동으로 건너뜀
+4. 구글시트에 새 행으로 추가 (자동으로 다음 빈 행부터 이어서 씀)
 """
 
 import os
@@ -24,12 +23,9 @@ from crawl_naver import (
 )
 from news_and_summarize import fetch_stock_news, summarize_with_claude
 
-# ===== 아래 4개는 본인 환경에 맞게 수정하세요 =====
 SPREADSHEET_ID = "1Ge-z86q2nsXmx5pCpda_Tkkkjm3AgeNDvI5k4PCPECc"
 SHEET_NAME = "K Stock2"
 SERVICE_ACCOUNT_FILE = "service_account.json"
-START_ROW = 1005
-# ================================================
 
 
 def get_worksheet():
@@ -43,15 +39,19 @@ def get_worksheet():
     return sheet.worksheet(SHEET_NAME)
 
 
+def get_next_empty_row(worksheet):
+    """A열에 이미 데이터가 있는 마지막 행 다음 줄을 자동으로 찾는다."""
+    col_a = worksheet.col_values(1)
+    return len(col_a) + 1
+
+
 def _to_thousands(value):
-    """원 단위 숫자를 천 단위로 변환 (상장주식수(천) 컬럼용)."""
     if value is None:
         return None
     return value / 1000
 
 
 def _pad_keywords(keywords):
-    """키워드가 3개 미만이면 빈칸으로 채워서 항상 3칸을 반환."""
     keywords = list(keywords)[:3]
     while len(keywords) < 3:
         keywords.append(None)
@@ -59,7 +59,6 @@ def _pad_keywords(keywords):
 
 
 def build_row_for_upper_limit(stock, today_str, enrichment, summary, row_number):
-    """상한가 종목 1개를 시트의 한 행(리스트)으로 변환. A~T 20개 컬럼 순서."""
     return [
         today_str,
         stock["rank"],
@@ -83,7 +82,6 @@ def build_row_for_upper_limit(stock, today_str, enrichment, summary, row_number)
 
 
 def build_row_for_top_value(stock, today_str, enrichment, summary, row_number):
-    """15~29.4% 급등(거래대금 상위) 종목 1개를 시트의 한 행으로 변환."""
     return [
         today_str,
         "-",
@@ -107,7 +105,6 @@ def build_row_for_top_value(stock, today_str, enrichment, summary, row_number):
 
 
 def process_stock(stock, today_str, is_upper_limit, row_number):
-    """종목 하나를 상세정보 + 뉴스요약까지 다 처리해서 시트 행으로 만든다."""
     code = stock["code"]
     name = stock["name"]
     print(f"  처리 중: {name} ({code})")
@@ -140,8 +137,7 @@ def process_stock(stock, today_str, is_upper_limit, row_number):
 
 
 def is_trading_day(date):
-    """주말 또는 한국 공휴일이면 False (휴장일로 간주)."""
-    if date.weekday() >= 5:  # 5=토, 6=일
+    if date.weekday() >= 5:
         return False
     kr_holidays = holidays.KR(years=date.year)
     if date in kr_holidays:
@@ -165,17 +161,22 @@ def main():
     top_value_stocks = fetch_top_trading_value_stocks(min_rate=15.0, max_rate=29.4)
     print(f"{len(top_value_stocks)}개 종목 발견")
 
-    print("\n=== 3. 종목별 상세정보 + 뉴스요약 처리 (병렬 처리) ===")
+    print("\n=== 3. 구글시트 연결 및 시작 행 확인 ===")
+    worksheet = get_worksheet()
+    start_row = get_next_empty_row(worksheet)
+    print(f"오늘 데이터는 {start_row}행부터 이어서 씁니다.")
+
+    print("\n=== 4. 종목별 상세정보 + 뉴스요약 처리 (병렬 처리) ===")
     all_stocks = [(s, True) for s in upper_stocks] + [(s, False) for s in top_value_stocks]
 
     tasks = []
-    current_row = START_ROW
+    current_row = start_row
     for stock, is_upper in all_stocks:
         tasks.append((stock, is_upper, current_row))
         current_row += 1
 
     results = [None] * len(tasks)
-    MAX_WORKERS = 1  # 순차 처리 (안정성 우선, 느리지만 동시 요청으로 인한 오류 없음)
+    MAX_WORKERS = 1
 
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         future_to_index = {
@@ -202,21 +203,17 @@ def main():
 
     print(f"\n총 {len(rows)}개 행 준비 완료")
 
-    print("\n=== 4. 구글시트에 기록 ===")
-    worksheet = get_worksheet()
-    end_row = START_ROW + len(rows) - 1
+    print("\n=== 5. 구글시트에 기록 ===")
+    end_row = start_row + len(rows) - 1
 
-    clear_end_row = START_ROW + 300
-    worksheet.batch_clear([f"A{START_ROW}:T{clear_end_row}"])
-
-    cell_range = f"A{START_ROW}:T{end_row}"
+    cell_range = f"A{start_row}:T{end_row}"
     worksheet.update(range_name=cell_range, values=rows, value_input_option="USER_ENTERED")
 
     percent_format = {"numberFormat": {"type": "PERCENT", "pattern": "0.0%"}}
-    worksheet.format(f"J{START_ROW}:J{end_row}", percent_format)
-    worksheet.format(f"M{START_ROW}:M{end_row}", percent_format)
+    worksheet.format(f"J{start_row}:J{end_row}", percent_format)
+    worksheet.format(f"M{start_row}:M{end_row}", percent_format)
 
-    print(f"완료! {START_ROW}행부터 {end_row}행까지 기록했어요. 시트를 확인해보세요.")
+    print(f"완료! {start_row}행부터 {end_row}행까지 기록했어요. 시트를 확인해보세요.")
 
 
 if __name__ == "__main__":
