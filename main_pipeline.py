@@ -4,7 +4,15 @@
 1. 네이버금융에서 상한가 + 15~29.4% 급등(거래대금 상위) 종목 크롤링
 2. 종목별 상세정보(업종/시가총액/상장주식수/외국인비율/거래대금) 크롤링
 3. 종목별 뉴스 크롤링 + Claude API(웹서치 포함)로 키워드/이슈/테마 요약
-4. 구글시트에 새 행으로 추가 (자동으로 다음 빈 행부터 이어서 씀)
+4. 구글시트에 새 행으로 추가
+5. 시장 자금흐름 분석 리포트 작성
+
+사전 준비:
+    pip install requests beautifulsoup4 lxml anthropic gspread google-auth holidays
+
+    - service_account.json : 서비스 계정 키 파일을 이 스크립트와 같은 폴더에
+    - 환경변수 ANTHROPIC_API_KEY 설정 필요
+    - 아래 SPREADSHEET_ID, SHEET_NAME 을 본인 시트에 맞게 수정 (시작 행은 자동으로 감지됨)
 """
 
 import os
@@ -22,10 +30,17 @@ from crawl_naver import (
     fetch_stock_detail,
 )
 from news_and_summarize import fetch_stock_news, summarize_with_claude
+from market_analysis import (
+    collect_today_theme_stats,
+    get_recent_theme_history,
+    generate_market_report,
+)
 
+# ===== 아래 3개는 본인 환경에 맞게 수정하세요 =====
 SPREADSHEET_ID = "1Ge-z86q2nsXmx5pCpda_Tkkkjm3AgeNDvI5k4PCPECc"
 SHEET_NAME = "K Stock2"
 SERVICE_ACCOUNT_FILE = "service_account.json"
+# ================================================
 
 
 def get_worksheet():
@@ -59,6 +74,7 @@ def _pad_keywords(keywords):
 
 
 def build_row_for_upper_limit(stock, today_str, enrichment, summary, row_number):
+    """상한가 종목 1개를 시트의 한 행(리스트)으로 변환. A~T 20개 컬럼 순서."""
     return [
         today_str,
         stock["rank"],
@@ -82,6 +98,7 @@ def build_row_for_upper_limit(stock, today_str, enrichment, summary, row_number)
 
 
 def build_row_for_top_value(stock, today_str, enrichment, summary, row_number):
+    """15~29.4% 급등(거래대금 상위) 종목 1개를 시트의 한 행으로 변환."""
     return [
         today_str,
         "-",
@@ -105,6 +122,7 @@ def build_row_for_top_value(stock, today_str, enrichment, summary, row_number):
 
 
 def process_stock(stock, today_str, is_upper_limit, row_number):
+    """종목 하나를 상세정보 + 뉴스요약까지 다 처리해서 시트 행으로 만든다."""
     code = stock["code"]
     name = stock["name"]
     print(f"  처리 중: {name} ({code})")
@@ -137,6 +155,7 @@ def process_stock(stock, today_str, is_upper_limit, row_number):
 
 
 def is_trading_day(date):
+    """주말 또는 한국 공휴일이면 False (휴장일로 간주)."""
     if date.weekday() >= 5:
         return False
     kr_holidays = holidays.KR(years=date.year)
@@ -213,7 +232,24 @@ def main():
     worksheet.format(f"J{start_row}:J{end_row}", percent_format)
     worksheet.format(f"M{start_row}:M{end_row}", percent_format)
 
-    print(f"완료! {start_row}행부터 {end_row}행까지 기록했어요. 시트를 확인해보세요.")
+    print("\n=== 6. 시장 자금흐름 분석 리포트 작성 ===")
+    try:
+        today_themes, today_industries = collect_today_theme_stats(rows)
+        recent_history = get_recent_theme_history(worksheet, before_row=start_row, num_days=5)
+        report_text = generate_market_report(today_str, today_themes, today_industries, recent_history)
+    except Exception as e:
+        print(f"  [경고] 리포트 생성 실패: {e}")
+        report_text = f"[리포트 생성 실패] {e}"
+
+    report_row = end_row + 1
+    worksheet.update(
+        range_name=f"A{report_row}",
+        values=[[f"📊 {today_str} 시장 자금흐름 분석\n\n{report_text}"]],
+        value_input_option="USER_ENTERED",
+    )
+    print(f"  리포트를 {report_row}행에 기록했어요.")
+
+    print(f"완료! {start_row}~{end_row}행 종목 데이터 + {report_row}행 시장분석 리포트까지 기록했어요.")
 
 
 if __name__ == "__main__":
