@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-네이버금융에서 '상한가' 및 '15%~29.5% 급등' 종목을 크롤링하는 스크립트.
+네이버금융에서 '상한가' 및 '15%~29.4% 급등' 종목을 크롤링하는 스크립트.
 """
 
 import re
@@ -18,6 +18,7 @@ HEADERS = {
 
 UPPER_LIMIT_URL = "https://finance.naver.com/sise/sise_upper.naver"
 TOP_TRADING_VALUE_URL = "https://finance.naver.com/sise/sise_quant.naver"
+RATE_RANK_URL = "https://finance.naver.com/sise/sise_rise.naver"
 ITEM_DETAIL_URL = "https://finance.naver.com/item/main.naver?code={code}"
 
 
@@ -63,6 +64,7 @@ def is_etf_or_etn(name):
 
 
 def fetch_upper_limit_stocks():
+    """상한가(29.5%+) 종목 리스트를 가져온다 (코스피 + 코스닥 모두)."""
     resp = requests.get(UPPER_LIMIT_URL, headers=HEADERS, timeout=10)
     resp.encoding = "euc-kr"
     soup = BeautifulSoup(resp.text, "lxml")
@@ -119,9 +121,10 @@ def fetch_upper_limit_stocks():
 
 
 def fetch_top_trading_value_stocks(min_rate=15.0, max_rate=29.4, max_pages=4):
+    """거래대금 상위 페이지에서 min_rate~max_rate 사이로 오른 개별 종목만 골라온다."""
     results = []
     seen_codes = set()
-    for sosok in (0, 1):  # 0: 코스피, 1: 코스닥
+    for sosok in (0, 1):
         for page in range(1, max_pages + 1):
             resp = requests.get(
                 TOP_TRADING_VALUE_URL,
@@ -176,6 +179,85 @@ def fetch_top_trading_value_stocks(min_rate=15.0, max_rate=29.4, max_pages=4):
 
             time.sleep(0.3)
 
+    results.sort(key=lambda s: s["change_rate"], reverse=True)
+    return results
+
+
+def fetch_rate_rank_stocks(min_rate=15.0, max_rate=29.4, max_pages=6):
+    """등락률(상승률) 상위 페이지에서 min_rate~max_rate 사이 개별 종목을 가져온다.
+
+    거래대금상위 목록에서는 초대형주에 밀려 안 잡히는 중형주 급등 종목을 보완하기 위한 용도.
+    """
+    results = []
+    seen_codes = set()
+    for sosok in (0, 1):
+        for page in range(1, max_pages + 1):
+            resp = requests.get(
+                RATE_RANK_URL,
+                headers=HEADERS,
+                params={"sosok": sosok, "page": page},
+                timeout=10,
+            )
+            resp.encoding = "euc-kr"
+            soup = BeautifulSoup(resp.text, "lxml")
+            table = soup.select_one("table.type_2")
+            if table is None:
+                break
+
+            rows = table.select("tr")
+            page_min_rate_seen = None
+            for row in rows:
+                link = row.select_one("a.tltle")
+                if link is None:
+                    continue
+
+                code = _extract_code_from_link(link)
+                name = link.get_text(strip=True)
+
+                cell_texts = [c.get_text(strip=True) for c in row.select("td")]
+                change_rate = None
+                for text in cell_texts:
+                    if "%" in text:
+                        change_rate = _clean_number(text)
+                        break
+
+                if change_rate is None:
+                    continue
+                page_min_rate_seen = change_rate
+
+                if is_etf_or_etn(name):
+                    continue
+                if code in seen_codes:
+                    continue
+
+                if min_rate <= change_rate <= max_rate:
+                    results.append({
+                        "market": "코스피" if sosok == 0 else "코스닥",
+                        "code": code,
+                        "name": name,
+                        "change_rate": change_rate,
+                    })
+                    seen_codes.add(code)
+
+            if page_min_rate_seen is not None and page_min_rate_seen < min_rate:
+                break
+
+            time.sleep(0.3)
+
+    results.sort(key=lambda s: s["change_rate"], reverse=True)
+    return results
+
+
+def fetch_notable_gainers(min_rate=15.0, max_rate=29.4):
+    """거래대금상위 + 등락률상위 두 소스를 합쳐서 15~29.4% 구간 종목을 최대한 놓치지 않고 가져온다."""
+    from_trading_value = fetch_top_trading_value_stocks(min_rate=min_rate, max_rate=max_rate)
+    from_rate_rank = fetch_rate_rank_stocks(min_rate=min_rate, max_rate=max_rate)
+
+    merged = {s["code"]: s for s in from_trading_value}
+    for s in from_rate_rank:
+        merged.setdefault(s["code"], s)
+
+    results = list(merged.values())
     results.sort(key=lambda s: s["change_rate"], reverse=True)
     return results
 
@@ -268,14 +350,14 @@ if __name__ == "__main__":
         print(f"[에러] 상한가 크롤링 실패: {e}")
 
     print()
-    print("=== 15~29.4% 급등 종목 크롤링 테스트 (거래대금 상위 기준) ===")
+    print("=== 15~29.4% 급등 종목 크롤링 테스트 (거래대금+등락률 통합) ===")
     try:
-        top_value = fetch_top_trading_value_stocks(min_rate=15.0, max_rate=29.4)
-        print(f"종목 수: {len(top_value)}")
-        for s in top_value[:10]:
+        gainers = fetch_notable_gainers(min_rate=15.0, max_rate=29.4)
+        print(f"종목 수: {len(gainers)}")
+        for s in gainers[:10]:
             print(s)
     except Exception as e:
-        print(f"[에러] 거래대금 상위 크롤링 실패: {e}")
+        print(f"[에러] 급등 종목 크롤링 실패: {e}")
 
     print()
     print("=== 종목 상세정보 크롤링 테스트 (SK하이닉스 000660) ===")
