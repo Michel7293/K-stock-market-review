@@ -40,22 +40,33 @@ def _extract_code_from_link(a_tag):
     return m.group(1) if m else None
 
 
+# ETF/ETN 브랜드 접두어.
+# 주의: 실제 기업명과 겹칠 수 있는 흔한 한글 단어(우리, 신한, 파워, 베셀 등)는
+# 넣으면 안 됨! (예: '우리기술투자', '신한지주', '파워로직스'가 잘못 걸러짐)
 _ETF_ETN_BRAND_PREFIXES = [
-    "TIGER", "KODEX", "KBSTAR", "SOL", "ACE", "HANARO", "1Q", "PLUS",
-    "RISE", "마이다스", "파워", "히어로즈", "타임폴리오", "네비게이터",
-    "코세프", "WOORI", "우리", "신한", "베셀", "FOCUS", "iSelect", "TIMEFOLIO",
+    "TIGER", "KODEX", "KBSTAR", "SOL ", "ACE ", "HANARO", "1Q ", "PLUS ",
+    "RISE ", "KOSEF", "ARIRANG", "FOCUS ", "TIMEFOLIO", "WOORI ",
+    "히어로즈", "마이다스", "네비게이터",
 ]
+
+# 종목명에 이 키워드가 들어가면 ETF/ETN/파생상품으로 간주.
+# 주의: 'TR', '액티브', '채권' 같은 흔한 말은 오탐 위험이 있어 제외함.
 _ETF_ETN_KEYWORDS = [
-    "레버리지", "인버스", "합성", "ETN", "국채", "채권", "금현물",
-    "선물", "TR", "액티브",
+    "레버리지", "인버스", "ETN", "선물", "금현물",
 ]
 
 
 def is_etf_or_etn(name):
+    """종목명으로 ETF/ETN/파생상품 여부를 판별.
+
+    실제 기업이 잘못 걸러지는 것(false positive)이 훨씬 나쁘므로,
+    확실한 경우에만 True를 반환하도록 보수적으로 판별한다.
+    """
     if not name:
         return False
+    upper_name = name.upper()
     for prefix in _ETF_ETN_BRAND_PREFIXES:
-        if name.upper().startswith(prefix.upper()):
+        if upper_name.startswith(prefix.upper()):
             return True
     for kw in _ETF_ETN_KEYWORDS:
         if kw in name:
@@ -170,7 +181,6 @@ def fetch_top_trading_value_stocks(min_rate=15.0, max_rate=29.4, max_pages=4):
                         "code": code,
                         "name": name,
                         "change_rate": change_rate,
-                        "raw_cells": cell_texts,
                     })
                     seen_codes.add(code)
 
@@ -184,10 +194,7 @@ def fetch_top_trading_value_stocks(min_rate=15.0, max_rate=29.4, max_pages=4):
 
 
 def fetch_rate_rank_stocks(min_rate=15.0, max_rate=29.4, max_pages=6):
-    """등락률(상승률) 상위 페이지에서 min_rate~max_rate 사이 개별 종목을 가져온다.
-
-    거래대금상위 목록에서는 초대형주에 밀려 안 잡히는 중형주 급등 종목을 보완하기 위한 용도.
-    """
+    """등락률(상승률) 상위 페이지에서 min_rate~max_rate 사이 개별 종목을 가져온다."""
     results = []
     seen_codes = set()
     for sosok in (0, 1):
@@ -340,6 +347,25 @@ def fetch_stock_detail(code):
 
 
 if __name__ == "__main__":
+    print("=== ETF 필터 검증 ===")
+    should_be_false = [
+        "우리기술투자", "우리기술", "우리금융지주", "신한지주", "파워로직스",
+        "베셀", "빙그레", "삼성전자", "SK하이닉스", "동양생명",
+    ]
+    should_be_true = [
+        "TIGER 200", "KODEX 레버리지", "KBSTAR 200", "SOL 반도체", "ACE 미국배당",
+        "HANARO 200", "RISE 200", "삼성 인버스 2X", "KOSEF 국고채10년",
+    ]
+    print("[실제 기업 - 모두 False여야 정상]")
+    for n in should_be_false:
+        mark = "OK" if not is_etf_or_etn(n) else "!! 오탐"
+        print(f"  {mark}: {n} -> {is_etf_or_etn(n)}")
+    print("[ETF/ETN - 모두 True여야 정상]")
+    for n in should_be_true:
+        mark = "OK" if is_etf_or_etn(n) else "!! 누락"
+        print(f"  {mark}: {n} -> {is_etf_or_etn(n)}")
+
+    print()
     print("=== 상한가 종목 크롤링 테스트 ===")
     try:
         upper = fetch_upper_limit_stocks()
@@ -358,11 +384,3 @@ if __name__ == "__main__":
             print(s)
     except Exception as e:
         print(f"[에러] 급등 종목 크롤링 실패: {e}")
-
-    print()
-    print("=== 종목 상세정보 크롤링 테스트 (SK하이닉스 000660) ===")
-    try:
-        detail = fetch_stock_detail("000660")
-        print(detail)
-    except Exception as e:
-        print(f"[에러] 상세정보 크롤링 실패: {e}")
